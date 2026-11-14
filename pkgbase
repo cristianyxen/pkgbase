@@ -26,20 +26,27 @@
 # THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 # ------------------------------
-# PKGBASE pkgbase-update(8) TOOL
+# PKGBASE pkgbase(8) UPDATE TOOL
 # ------------------------------
 # vermaden [AT] interia [DOT] pl
 # https://vermaden.wordpress.com
+
+# DEFAULTS
+ARG_BOOT=${ARG_BOOT:-"yes"}
 
 # DISPLAY USAGE INFORMATION
 __usage() {
   NAME=${0##*/}
   echo "usage:"
-  echo "  ${NAME} upgrade -r VERSION"
-  echo "  ${NAME} install"
+  echo "  ${NAME} upgrade -r VERSION [-L]"
   echo "  ${NAME} loader"
   echo "  ${NAME} pkgnew"
   echo "  ${NAME} modules"
+  echo
+  echo "options:"
+  echo "  -r VERSION  FreeBSD version You want to upgrade to"
+  echo "  -L          omit UEFI/BIOS bootcode upgrade process"
+  echo
   exit 1
 }
 
@@ -90,55 +97,62 @@ __loader() {
 
     echo "INFO: detected ZFS based FreeBSD installation"
 
-    # ZFS
+    # ZFS DISKS DETECTION PROCESS
     BOOT_POOL=$( echo "${BOOT_ROOT}" | awk -F '/' '{print $1}' )
-    BOOT_DISK=$( zpool status "${BOOT_POOL}" \
-                   | grep -A 256 NAME \
-                   | grep -v '^errors:' \
-                   | grep -v NAME \
-                   | sed 1d \
-                   | awk '{print $1}' \
-                   | awk -F '.' '{print $1}' \
-                   | grep -o -E '[a-z]+[0-9]+' \
-                   | head -1 )
+
+    # FIND ZFS DISKS THAT ONLY CONTAIN DATA
+    BOOT_DISK=$( zpool status -PL "${BOOT_POOL}" \
+                   | awk -v POOL="${BOOT_POOL}" \
+                       '/config:/ { c=1; next }
+                        /errors:/ { c=0 }
+                        !c { next }
+                        $1 ~ /^(log|cache|special|spare)$/ { s=1; next }
+                        $1 == POOL { s=0; next }
+                        !s && $1 ~ /^\// && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)$/ { print $1, $2 }' )
+
+    # REMOVE PARTITIONS FROM DISKS
+    BOOT_DISK=$( echo "${BOOT_DISK}" | awk '{print $1}' | sed -e 's.p[0-9]*$..' | tr '\n' ' ' )
 
   fi
 
-  # FIND freebsd-boot PARTITION
-  BOOT_INDEX=$( gpart show "${BOOT_DISK}" | grep ' freebsd-boot ' | awk '{print $3}' )
+  # LOOP FOR DISKS BOOTCODE UPGRADE
+  for DISK in ${BOOT_DISK}
+  do
 
-  if [ "${BOOT_INDEX}" = "" ]
-  then
-    echo "INFO: could not find BIOS partition on this system"
-  fi
+    # FIND freebsd-boot PARTITION
+    BOOT_INDEX=$( gpart show "${DISK}" | grep ' freebsd-boot ' | awk '{print $3}' )
 
-  # UPDATE BIOS FreeBSD loader(8) BOOTCODE
-  gpart bootcode -b /boot/pmbr -p /boot/gptzfsboot -i ${BOOT_INDEX} ${BOOT_DISK} ; RET_VAL=${?}
+    # CHECK IF freebsd-boot PARTITION WAS FOUND
+    if [ "${BOOT_INDEX}" = "" ]
+    then
+      echo "INFO: could not find BIOS partition on this system"
+    fi
 
-  # CHECK IF UPDATE SUCCEEDED
-  if [ ${RET_VAL} != "0" ]
-  then
-    echo "NOPE: failed to update BIOS FreeBSD loader(8) bootcode"
-    exit 1
-  fi
+    # UPDATE BIOS FreeBSD loader(8) BOOTCODE
+    gpart bootcode -b /boot/pmbr -p /boot/gptzfsboot -i ${BOOT_INDEX} ${DISK} ; RET_VAL=${?}
 
-  # CHECK IF UEFI IS ALREADY MOUNTED AT /boot/efi DIR
-  if mount -p | grep msdosfs | awk '{print $2}' | grep -q /boot/efi
-  then
+    # CHECK IF UPDATE SUCCEEDED
+    if [ ${RET_VAL} != "0" ]
+    then
+      echo "NOPE: failed to update BIOS FreeBSD loader(8) bootcode"
+      BOOTCODE_UPDATE_FAIL=1
+    fi
 
-    echo "INFO: the UEFI partition is already mounted at /boot/efi dir"
-
-  else
+    # CHECK IF UEFI IS ALREADY MOUNTED AT /boot/efi DIR
+    if mount -p | grep msdosfs | awk '{print $2}' | grep -q /boot/efi
+    then
+      echo "INFO: the '/boot/efi' UEFI will now be unmounted"
+    fi
 
     echo "INFO: the UEFI partition will be now mounted at /boot/efi dir"
 
     # FIND UEFI PARTITION
-    BOOT_EFI=$( gpart show -p "${BOOT_DISK}" | grep ' efi ' | awk '{print $3}' )
+    BOOT_EFI=$( gpart show -p "${DISK}" | grep ' efi ' | awk '{print $3}' )
 
+    # CHECK IF WE FOUND UEFI PARTITION ON THIS DISK
     if [ "${BOOT_EFI}" = "" ]
     then
-      echo "INFO: could not find UEFI partition on this system"
-      return
+      echo "INFO: could not find UEFI partition on this disk"
     fi
 
     # MAKE SURE /boot/efi DIR EXISTS
@@ -158,27 +172,33 @@ __loader() {
     # SET FLAG FOR LATER umount(8) COMMAND
     MANUAL_UEFI_UMOUNT=1
 
-  fi
+    # UPDATE FreeBSD loader(8) WITHING PROPER ARCH
+    case $( uname -p ) in
+      (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ; RET_VAL=${?} ;;
+      (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ; RET_VAL=${?} ;;
+      (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ; RET_VAL=${?} ;;
+    esac
 
-  # UPDATE FreeBSD loader(8) WITHING PROPER ARCH
-  case $( uname -p ) in
-    (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ; RET_VAL=${?} ;;
-    (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ; RET_VAL=${?} ;;
-    (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ; RET_VAL=${?} ;;
-  esac
+    # CHECK IF UPDATE SUCCEEDED
+    if [ ${RET_VAL} != "0" ]
+    then
+      echo "NOPE: failed to update UEFI FreeBSD loader(8) bootcode"
+      exit 1
+    fi
 
-  # CHECK IF UPDATE SUCCEEDED
-  if [ ${RET_VAL} != "0" ]
-  then
-    echo "NOPE: failed to update UEFI FreeBSD loader(8) bootcode"
-    exit 1
-  fi
+    # UMOUNT UEFI PARTITION
+    if [ "${MANUAL_UEFI_UMOUNT}" = "1" ]
+    then
+      umount -f /boot/efi 1> /dev/null 2> /dev/null
+    fi
 
-  # UMOUNT UEFI PARTITION
-  if [ "${MANUAL_UEFI_UMOUNT}" = "1" ]
-  then
-    umount -f /boot/efi 1> /dev/null 2> /dev/null
-  fi
+    # UPDATE CHECK
+    if [ "${BOOTCODE_UPDATE_FAIL}" = "1" ]
+    then
+      echo "NOPE: failed to update bootcode for '${DISK}' disk"
+    fi
+
+  done
 
 }
 
@@ -223,15 +243,41 @@ __ver_regex() { # 1=VERSION_TO_CHECK
 # TRAP TO CLEAN AFTER INTERRUPT
 trap '__clean' 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 
-
+# DISPLAY VERSION AND EXIT
+case "${1}" in
+  (--version|-version|version)
+    echo
+    echo "pkgbase(8) 0.3 2026/11/15"
+    echo
+    exit 1
+    ;;
+esac
 
 # MAIN
 case "${1}" in
   (upgrade)
 
     case "${2}" in
+      (-L)
+         # MOVE '-L' OPTION TO THE BACK
+         shift
+         /bin/sh ${0} ${@} -L
+         exit 0
+         ;;
+
       (-r)
+        # VERIFY VERSIONS FOR UPGRADE
         __ver_regex "${3}"
+
+        # CREATE BACKUP ZFS BOOT ENVIRONMENT
+        bectl create pkgbase-$( uname -r )-$( date '+%Y-%m-%d-%T' ) ; RET_VAL=${?}
+
+        # CHECK IF ZFS BOOT ENVIRONMENT WAS CREATED
+        if [ ${RET_VAL} != "0" ]
+        then
+          echo "NOPE: failed to create ZFS Boot Environment"
+          exit 1
+        fi
 
         # CREATE DIR FOR TEMP UPGRADE REPO
         if ! mkdir -p "/tmp/${VER_REG}" 1> /dev/null 2> /dev/null
@@ -253,24 +299,35 @@ case "${1}" in
               }" > "/tmp/${VER_REG}/repo.conf"
 
         # FIRST UPGRADE ONLY THE pkg(8) TOOL
-        # pkg upgrade -y -r FreeBSD-ports pkg
-        pkg upgrade -y -r FreeBSD-ports pkg
+        pkg upgrade -y -r FreeBSD-ports pkg ; RET_VAL=${?}
+
+        # CHECK IF pkg(8) IS ABLE TO UPGRADE ITSELF
+        if [ ${RET_VAL} != "0" ]
+        then
+          echo "NOPE: failed to upgrade pkg(8) package"
+          exit 1
+        fi
 
         # DO ACTUAL FreeBSD Base System UPGRADE
         # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
         pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
             -o IGNORE_OSVERSION=yes \
-            upgrade -r FreeBSD-base
+            upgrade -y -r FreeBSD-base
 
         echo "INFO: review pkg(8) info - sometimes 'service <name> setup' is needed"
 
         # UPGRADE KERNEL MODULES FROM FreeBSD-ports-kmods REPO
         # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
         pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
-            upgrade -r FreeBSD-ports-kmods
+            upgrade -y -r FreeBSD-ports-kmods
 
-        # UPGRADE FreeBSD loader(8) BOOTCODE
-        __loader
+        # UPGRADE FreeBSD loader(8) BOOTCODE OR NOT IF '-L' OPTION USED
+        if [ "${4}" = "-L" ]
+        then
+          ARG_BOOT="no"
+        else
+          __loader
+        fi
 
         # CHECK FOR *.pkgnew FILES
         __pkgnew
