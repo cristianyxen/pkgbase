@@ -34,6 +34,16 @@
 # DEFAULTS
 ARG_BOOT=${ARG_BOOT:-"yes"}
 
+# CHECK THAT WE OPERATE ON A PKGBASE SYSTEM IN THE FIRST PLACE
+__check_pkgbase() {
+  if ! pkg which -o /bin/ls 1> /dev/null 2> /dev/null
+  then
+    echo "NOPE: this FreeBSD system does not use PKGBASE packaging"
+    echo "INFO: on FreeBSD with Distribution Sets use freebsd-update(8) tool"
+    exit 1
+  fi
+}
+
 # DISPLAY USAGE INFORMATION
 __usage() {
   NAME=${0##*/}
@@ -260,9 +270,13 @@ case "${1}" in
     ;;
 esac
 
+
+
 # MAIN
 case "${1}" in
   (upgrade)
+    # CHECK IF ITS PKGBASE SYSTEM
+    __check_pkgbase
 
     case "${2}" in
       (-L)
@@ -383,6 +397,9 @@ case "${1}" in
     ;;
 
   (pkgnew)
+    # CHECK IF ITS PKGBASE SYSTEM
+    __check_pkgbase
+
     # CHECK FOR *.pkgnew FILES
     __pkgnew
     ;;
