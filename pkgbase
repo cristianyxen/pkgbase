@@ -42,9 +42,11 @@ __usage() {
   echo "  ${NAME} loader"
   echo "  ${NAME} pkgnew"
   echo "  ${NAME} modules"
+  echo "  ${NAME} version"
+  echo "  ${NAME} help"
   echo
   echo "options:"
-  echo "  -r VERSION  FreeBSD version You want to upgrade to"
+  echo "  -r VERSION  FreeBSD version you want to upgrade to"
   echo "  -L          omit UEFI/BIOS bootcode upgrade process"
   echo
   exit 1
@@ -60,7 +62,7 @@ __clean() {
 __pkgnew() {
   echo "INFO: checking for configs installed as '.pkgnew' files ..."
   find /etc /usr/local/etc -name '*.pkgnew' -ls
-  echo "INFO: if any files listed above - manually compare them"
+  echo "INFO: if any files listed above - manually compare them like:"
   echo "INFO:   # diff -u /etc/rc.conf /etc/rc.conf.pkgnew"
   echo "INFO: and merge any necessary manual changes"
 }
@@ -144,8 +146,6 @@ __loader() {
       echo "INFO: the '/boot/efi' UEFI will now be unmounted"
     fi
 
-    echo "INFO: the UEFI partition will be now mounted at /boot/efi dir"
-
     # FIND UEFI PARTITION
     BOOT_EFI=$( gpart show -p "${DISK}" | grep ' efi ' | awk '{print $3}' )
 
@@ -153,49 +153,56 @@ __loader() {
     if [ "${BOOT_EFI}" = "" ]
     then
       echo "INFO: could not find UEFI partition on this disk"
-    fi
+    else
 
-    # MAKE SURE /boot/efi DIR EXISTS
-    if ! mkdir -p /boot/efi 1> /dev/null 2> /dev/null
-    then
-      echo "NOPE: could not make sure '/boot/efi' exists"
-      exit 1
-    fi
+      echo "INFO: will attempt to update UEFI bootcode"
 
-    # MOUNT UEFI PARTITION
-    if ! mount_msdosfs "/dev/${BOOT_EFI}" /boot/efi 1> /dev/null 2> /dev/null
-    then
-      echo "NOPE: could not mount(8) UEFI partition"
-      exit 1
-    fi
+      # MAKE SURE /boot/efi DIR EXISTS
+      if ! mkdir -p /boot/efi 1> /dev/null 2> /dev/null
+      then
+        echo "NOPE: could not make sure '/boot/efi' exists"
+        exit 1
+      fi
 
-    # SET FLAG FOR LATER umount(8) COMMAND
-    MANUAL_UEFI_UMOUNT=1
+      # MOUNT UEFI PARTITION
+      if ! mount_msdosfs "/dev/${BOOT_EFI}" /boot/efi 1> /dev/null 2> /dev/null
+      then
+        echo "NOPE: could not mount(8) UEFI partition for '${DISK}' disk"
+        continue
+      fi
 
-    # UPDATE FreeBSD loader(8) WITHING PROPER ARCH
-    case $( uname -p ) in
-      (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ; RET_VAL=${?} ;;
-      (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ; RET_VAL=${?} ;;
-      (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ; RET_VAL=${?} ;;
-    esac
+      # SET FLAG FOR LATER umount(8) COMMAND
+      MANUAL_UEFI_UMOUNT=1
 
-    # CHECK IF UPDATE SUCCEEDED
-    if [ ${RET_VAL} != "0" ]
-    then
-      echo "NOPE: failed to update UEFI FreeBSD loader(8) bootcode"
-      exit 1
-    fi
+      # UPDATE FreeBSD loader(8) WITHING PROPER ARCH
+      case $( uname -p ) in
+        (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ; RET_VAL=${?} ;;
+        (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ; RET_VAL=${?} ;;
+        (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ; RET_VAL=${?} ;;
+      esac
 
-    # UMOUNT UEFI PARTITION
-    if [ "${MANUAL_UEFI_UMOUNT}" = "1" ]
-    then
-      umount -f /boot/efi 1> /dev/null 2> /dev/null
-    fi
+      # CHECK IF UPDATE SUCCEEDED
+      if [ ${RET_VAL} != "0" ]
+      then
+        echo "NOPE: failed to update UEFI FreeBSD loader(8) bootcode for '${DISK}' disk"
+        exit 1
+      else
+        echo "INFO: UEFI FreeBSD loader(8) bootcode updated for '${DISK}' disk"
+      fi
 
-    # UPDATE CHECK
-    if [ "${BOOTCODE_UPDATE_FAIL}" = "1" ]
-    then
-      echo "NOPE: failed to update bootcode for '${DISK}' disk"
+      # UMOUNT UEFI PARTITION
+      if [ "${MANUAL_UEFI_UMOUNT}" = "1" ]
+      then
+        umount -f /boot/efi 1> /dev/null 2> /dev/null
+      fi
+
+      # UPDATE CHECK
+      if [ "${BOOTCODE_UPDATE_FAIL}" = "1" ]
+      then
+        echo "NOPE: failed to update BIOS bootcode for '${DISK}' disk"
+      else
+        echo "INFO: BIOS bootcode for '${DISK}' disk updated"
+      fi
     fi
 
   done
@@ -261,7 +268,8 @@ case "${1}" in
       (-L)
          # MOVE '-L' OPTION TO THE BACK
          shift
-         /bin/sh ${0} ${@} -L
+         REMAPED_ARGS=$( echo "${@}" | sed s.-L..g )
+         /bin/sh ${0} upgrade ${REMAPED_ARGS} -L
          exit 0
          ;;
 
@@ -269,14 +277,20 @@ case "${1}" in
         # VERIFY VERSIONS FOR UPGRADE
         __ver_regex "${3}"
 
-        # CREATE BACKUP ZFS BOOT ENVIRONMENT
-        bectl create pkgbase-$( uname -r )-$( date '+%Y-%m-%d-%T' ) ; RET_VAL=${?}
-
-        # CHECK IF ZFS BOOT ENVIRONMENT WAS CREATED
-        if [ ${RET_VAL} != "0" ]
+        # ON ZFS SYSTEMS CREATE ZFS BOOT ENVIRONMENT
+        if ! mount | awk '/ \/ / {print $1}' | grep -q '^/' 1> /dev/null 2> /dev/null
         then
-          echo "NOPE: failed to create ZFS Boot Environment"
-          exit 1
+
+          # CREATE BACKUP ZFS BOOT ENVIRONMENT
+          bectl create pkgbase-$( uname -r )-$( date '+%Y-%m-%d-%T' ) ; RET_VAL=${?}
+
+          # CHECK IF ZFS BOOT ENVIRONMENT WAS CREATED
+          if [ ${RET_VAL} != "0" ]
+          then
+            echo "NOPE: failed to create ZFS Boot Environment"
+            exit 1
+          fi
+
         fi
 
         # CREATE DIR FOR TEMP UPGRADE REPO
@@ -305,6 +319,7 @@ case "${1}" in
         if [ ${RET_VAL} != "0" ]
         then
           echo "NOPE: failed to upgrade pkg(8) package"
+          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
           exit 1
         fi
 
@@ -312,19 +327,36 @@ case "${1}" in
         # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
         pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
             -o IGNORE_OSVERSION=yes \
-            upgrade -y -r FreeBSD-base
+            upgrade -y -r FreeBSD-base ; RET_VAL=${?}
+
+        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-base REPO WORKED
+        if [ ${RET_VAL} != "0" ]
+        then
+          echo "NOPE: failed to upgrade FreeBSD Base System with pkg(8) command"
+          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
+          exit 1
+        fi
 
         echo "INFO: review pkg(8) info - sometimes 'service <name> setup' is needed"
 
         # UPGRADE KERNEL MODULES FROM FreeBSD-ports-kmods REPO
         # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
         pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
-            upgrade -y -r FreeBSD-ports-kmods
+            upgrade -y -r FreeBSD-ports-kmods ; RET_VAL=${?}
+
+        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-ports-kmods REPO WORKED
+        if [ ${RET_VAL} != "0" ]
+        then
+          echo "NOPE: failed to upgrade FreeBSD KMODs with pkg(8) command"
+          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
+          exit 1
+        fi
 
         # UPGRADE FreeBSD loader(8) BOOTCODE OR NOT IF '-L' OPTION USED
         if [ "${4}" = "-L" ]
         then
           ARG_BOOT="no"
+          echo "INFO: you disabled update UEFI/BIOS bootcode with '-L' option"
         else
           __loader
         fi
@@ -335,9 +367,6 @@ case "${1}" in
         echo "INFO: you successfully finished the upgrade process"
         echo "INFO: you may now restart the system with usual command"
         echo "INFO:   # shutdown -r now"
-
-        # CLEAN AFTER WORK
-        __clean
         ;;
 
       (*)
