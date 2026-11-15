@@ -40,6 +40,7 @@ Updating FreeBSD-ports repository catalogue...
 - Add additional check if first `pkg(8)` update works.
 - More information messages.
 - Better checks.
+- Add check for PKGBASE FreeBSD system.
   
 **0.2**
 
