@@ -264,7 +264,7 @@ trap '__clean' 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 case "${1}" in
   (--version|-version|version)
     echo
-    echo "pkgbase(8) 0.3 2026/11/15"
+    echo "pkgbase(8) 0.4 2026/11/21"
     echo
     exit 1
     ;;
@@ -288,6 +288,13 @@ case "${1}" in
          ;;
 
       (-r)
+        # VERIFY ARGUMENT
+        if [ "${3}" = "" ]
+        then
+          echo "NOPE: please specify version that you want to upgrade to"
+          exit 1
+        fi
+
         # VERIFY VERSIONS FOR UPGRADE
         __ver_regex "${3}"
 
@@ -337,13 +344,30 @@ case "${1}" in
           exit 1
         fi
 
-        # DO ACTUAL FreeBSD Base System UPGRADE
-        # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
-        pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
-            -o IGNORE_OSVERSION=yes \
-            upgrade -y -r FreeBSD-base ; RET_VAL=${?}
+        # CHECK IF WE NEED TO DO UPGRADE BETWEEN 'RELEASE' VERSIONS
+        if echo "${VER_INS}" | grep -q -- '-RELEASE' && \
+           echo "${VER_REG}" | grep -q -- '-RELEASE'
+        then
 
-        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-base REPO WORKED
+          echo "INFO: major upgrade between RELEASE versions"
+
+          TARGET="${VER_NUM_MJR}0${VER_NUM_MIN}000"
+
+          pkg -o ABI=FreeBSD:${VER_NUM_MJR}:$(uname -p) \
+              -o OSVERSION=${TARGET} upgrade \
+              -y -r FreeBSD-base ; RET_VAL=${?}
+
+        else
+
+          # DO ACTUAL FreeBSD Base System UPGRADE
+          # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
+          pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
+              -o IGNORE_OSVERSION=yes \
+              upgrade -y -r FreeBSD-base ; RET_VAL=${?}
+
+        fi
+
+        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-base WORKED
         if [ ${RET_VAL} != "0" ]
         then
           echo "NOPE: failed to upgrade FreeBSD Base System with pkg(8) command"
