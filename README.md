@@ -31,6 +31,10 @@ Updating FreeBSD-ports repository catalogue...
 
 ## Changelog
 
+**0.4**
+- Add support for *-RELEASE to *-RELEASE upgrade.
+- Add additional argument verification.
+
 **0.3**
 - Take care of all ZFS pool disks to update bootcode.
 - Automatically Create ZFS Boot Environment on ZFS systems.
