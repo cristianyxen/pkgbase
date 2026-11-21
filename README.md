@@ -7,7 +7,7 @@ FreeBSD `pkgbase(8)` upgrade tool in PKGBASE world similar to `freebsd-update(8)
 ```
 freebsd # pkgbase
 usage:
-  pkgbase upgrade -r VERSION [-L]
+  pkgbase upgrade -r VERSION [-L] [-B]
   pkgbase loader
   pkgbase pkgnew
   pkgbase modules
@@ -17,7 +17,7 @@ usage:
 options:
   -r VERSION  FreeBSD version you want to upgrade to
   -L          omit UEFI/BIOS bootcode upgrade process
-
+  -B          omit ZFS Boot Environment creation
 ```
 
 ## Example
@@ -30,6 +30,12 @@ Updating FreeBSD-ports repository catalogue...
 ```
 
 ## Changelog
+
+**0.5**
+
+- Add `-B` option to omit ZFS Boot Environment creation and move that into `__zfsbe()` function.
+- Remove `RET_VAL` variables.
+- Use `getopts(1)` for arguments parsing.
 
 **0.4**
 - Add support for *-RELEASE to *-RELEASE upgrade.

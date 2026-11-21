@@ -33,6 +33,8 @@
 
 # DEFAULTS
 ARG_BOOT=${ARG_BOOT:-"yes"}
+ARG_BENV=${ARG_BENV:-"yes"}
+ARG_VERS=${ARG_VERS:-""}
 
 # CHECK THAT WE OPERATE ON A PKGBASE SYSTEM IN THE FIRST PLACE
 __check_pkgbase() {
@@ -48,7 +50,7 @@ __check_pkgbase() {
 __usage() {
   NAME=${0##*/}
   echo "usage:"
-  echo "  ${NAME} upgrade -r VERSION [-L]"
+  echo "  ${NAME} upgrade -r VERSION [-L] [-B]"
   echo "  ${NAME} loader"
   echo "  ${NAME} pkgnew"
   echo "  ${NAME} modules"
@@ -58,6 +60,7 @@ __usage() {
   echo "options:"
   echo "  -r VERSION  FreeBSD version you want to upgrade to"
   echo "  -L          omit UEFI/BIOS bootcode upgrade process"
+  echo "  -B          omit ZFS Boot Environment creation"
   echo
   exit 1
 }
@@ -75,6 +78,25 @@ __pkgnew() {
   echo "INFO: if any files listed above - manually compare them like:"
   echo "INFO:   # diff -u /etc/rc.conf /etc/rc.conf.pkgnew"
   echo "INFO: and merge any necessary manual changes"
+}
+
+# CREATE ZFS Boot Environment
+__zfsbe() {
+  # CREATE ZFS Boot Environment ONLY ON ZFS SYSTEMS
+  if ! mount | awk '/ \/ / {print $1}' | grep -q '^/' 1> /dev/null 2> /dev/null
+  then
+
+    # CREATE BACKUP ZFS Boot Environment
+    bectl create "pkgbase-$( uname -r )-$( date '+%Y-%m-%d-%T' )"
+
+    # CHECK IF ZFS BOOT ENVIRONMENT WAS CREATED
+    if [ "${?}" != "0" ]
+    then
+      echo "NOPE: failed to create ZFS Boot Environment"
+      exit 1
+    fi
+
+  fi
 }
 
 # UPDATE FreeBSD loader(8) BOOTCODE
@@ -113,14 +135,15 @@ __loader() {
     BOOT_POOL=$( echo "${BOOT_ROOT}" | awk -F '/' '{print $1}' )
 
     # FIND ZFS DISKS THAT ONLY CONTAIN DATA
-    BOOT_DISK=$( zpool status -PL "${BOOT_POOL}" \
-                   | awk -v POOL="${BOOT_POOL}" \
-                       '/config:/ { c=1; next }
-                        /errors:/ { c=0 }
-                        !c { next }
-                        $1 ~ /^(log|cache|special|spare)$/ { s=1; next }
-                        $1 == POOL { s=0; next }
-                        !s && $1 ~ /^\// && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)$/ { print $1, $2 }' )
+    BOOT_DISK=$(
+      zpool status -PL "${BOOT_POOL}" \
+        | awk -v POOL="${BOOT_POOL}" \
+            '/config:/ { c=1; next }
+             /errors:/ { c=0 }
+             !c { next }
+             $1 ~ /^(log|cache|special|spare)$/ { s=1; next }
+             $1 == POOL { s=0; next }
+             !s && $1 ~ /^\// && $2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)$/ { print $1, $2 }' )
 
     # REMOVE PARTITIONS FROM DISKS
     BOOT_DISK=$( echo "${BOOT_DISK}" | awk '{print $1}' | sed -e 's.p[0-9]*$..' | tr '\n' ' ' )
@@ -141,10 +164,10 @@ __loader() {
     fi
 
     # UPDATE BIOS FreeBSD loader(8) BOOTCODE
-    gpart bootcode -b /boot/pmbr -p /boot/gptzfsboot -i ${BOOT_INDEX} ${DISK} ; RET_VAL=${?}
+    gpart bootcode -b /boot/pmbr -p /boot/gptzfsboot -i ${BOOT_INDEX} ${DISK}
 
     # CHECK IF UPDATE SUCCEEDED
-    if [ ${RET_VAL} != "0" ]
+    if [ "${?}" != "0" ]
     then
       echo "NOPE: failed to update BIOS FreeBSD loader(8) bootcode"
       BOOTCODE_UPDATE_FAIL=1
@@ -186,13 +209,13 @@ __loader() {
 
       # UPDATE FreeBSD loader(8) WITHING PROPER ARCH
       case $( uname -p ) in
-        (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ; RET_VAL=${?} ;;
-        (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ; RET_VAL=${?} ;;
-        (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ; RET_VAL=${?} ;;
+        (amd64)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTX64.EFI  ;;
+        (aarch64) cp /boot/loader.efi /boot/efi/efi/boot/BOOTAA64.EFI ;;
+        (armv7)   cp /boot/loader.efi /boot/efi/efi/boot/BOOTARM.EFI  ;;
       esac
 
       # CHECK IF UPDATE SUCCEEDED
-      if [ ${RET_VAL} != "0" ]
+      if [ "${?}" != "0" ]
       then
         echo "NOPE: failed to update UEFI FreeBSD loader(8) bootcode for '${DISK}' disk"
         exit 1
@@ -223,10 +246,10 @@ __loader() {
 __ver_regex() { # 1=VERSION_TO_CHECK
   VER_REG=$( echo "${1}" | grep -o -E '[0-9]+\.[0-9]-[A-Z]+[0-9]*' )
   VER_INS=$( freebsd-version )
-  VER_NUM=$( echo "${VER_REG}" | awk -F '-' '{print $1}' )
+  VER_NUM=$(     echo "${VER_REG}" | awk -F '-' '{print $1}' )
   VER_NUM_MJR=$( echo "${VER_NUM}" | awk -F '.' '{print $1}' )
   VER_NUM_MIN=$( echo "${VER_NUM}" | awk -F '.' '{print $2}' )
-  VER_CLS=$( echo "${VER_REG}" | awk -F '-' '{print $2}' )
+  VER_CLS=$(     echo "${VER_REG}" | awk -F '-' '{print $2}' )
   VER_CLS_LOW=$( echo "${VER_CLS}" | tr 'A-Z' 'a-z' )
   VER_EXC="PRERELEASE"
 
@@ -264,7 +287,7 @@ trap '__clean' 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 case "${1}" in
   (--version|-version|version)
     echo
-    echo "pkgbase(8) 0.4 2026/11/21"
+    echo "pkgbase(8) 0.5 2026/11/21"
     echo
     exit 1
     ;;
@@ -278,141 +301,130 @@ case "${1}" in
     # CHECK IF ITS PKGBASE SYSTEM
     __check_pkgbase
 
-    case "${2}" in
-      (-L)
-         # MOVE '-L' OPTION TO THE BACK
-         shift
-         REMAPED_ARGS=$( echo "${@}" | sed s.-L..g )
-         /bin/sh ${0} upgrade ${REMAPED_ARGS} -L
-         exit 0
-         ;;
+    if [ ${#} -lt 3 ]
+    then
+      __usage
+    fi
 
-      (-r)
-        # VERIFY ARGUMENT
-        if [ "${3}" = "" ]
-        then
-          echo "NOPE: please specify version that you want to upgrade to"
-          exit 1
-        fi
+    shift
 
-        # VERIFY VERSIONS FOR UPGRADE
-        __ver_regex "${3}"
+    # OBTAIN ARGUMENTS FOR OPTIONS
+    while getopts r:LB ARG
+    do
+      case "${ARG}" in
+        (L) ARG_BOOT="no"        ;;
+        (B) ARG_BENV="no"        ;;
+        (r) ARG_VERS="${OPTARG}" ;;
+        (*) __usage              ;;
+      esac
+    done
 
-        # ON ZFS SYSTEMS CREATE ZFS BOOT ENVIRONMENT
-        if ! mount | awk '/ \/ / {print $1}' | grep -q '^/' 1> /dev/null 2> /dev/null
-        then
+    # DEBUG
+    echo ARG_BOOT: ${ARG_BOOT}
+    echo ARG_BENV: ${ARG_BENV}
+    echo ARG_VERS: ${ARG_VERS}
 
-          # CREATE BACKUP ZFS BOOT ENVIRONMENT
-          bectl create pkgbase-$( uname -r )-$( date '+%Y-%m-%d-%T' ) ; RET_VAL=${?}
+    # VERIFY VERSIONS FOR UPGRADE
+    __ver_regex "${ARG_VERS}"
 
-          # CHECK IF ZFS BOOT ENVIRONMENT WAS CREATED
-          if [ ${RET_VAL} != "0" ]
-          then
-            echo "NOPE: failed to create ZFS Boot Environment"
-            exit 1
-          fi
+    # CREATE ZFS Boot Environment BEFORE CHANGES
+    if [ "${ARG_BENV}" = "no" ]
+    then
+      echo "INFO: you disabled ZFS Boot Environment creation"
+    else
+      __zfsbe
+    fi
 
-        fi
+    # CREATE DIR FOR TEMP UPGRADE REPO
+    if ! mkdir -p "/tmp/${VER_REG}" 1> /dev/null 2> /dev/null
+    then
+      echo "NOPE: could not create '/tmp/${VER_REG}' dir"
+      exit 1
+    fi
 
-        # CREATE DIR FOR TEMP UPGRADE REPO
-        if ! mkdir -p "/tmp/${VER_REG}" 1> /dev/null 2> /dev/null
-        then
-          echo "NOPE: could not create '/tmp/${VER_REG}' dir"
-          exit 1
-        fi
+    # CHECK IF POSSIBLE TO CREATE REPO CONFIG
+    if ! touch "/tmp/${VER_REG}/repo.conf" 1> /dev/null 2> /dev/null
+    then
+      echo "NOPE: could not create '/tmp/${VER_REG}/repo.conf' file"
+      exit 1
+    fi
 
-        # CHECK IF POSSIBLE TO CREATE REPO CONFIG
-        if ! touch "/tmp/${VER_REG}/repo.conf" 1> /dev/null 2> /dev/null
-        then
-          echo "NOPE: could not create '/tmp/${VER_REG}/repo.conf' file"
-          exit 1
-        fi
+    # CREATE ACTUAL REPO CONFIG
+    echo "FreeBSD-base: {
+            url: \"https://pkg.FreeBSD.org/\${ABI}/base_release_${VER_NUM_MIN}_${VER_CLS_LOW}\"
+          }" > "/tmp/${VER_REG}/repo.conf"
 
-        # CREATE ACTUAL REPO CONFIG
-        echo "FreeBSD-base: {
-                url: \"https://pkg.FreeBSD.org/\${ABI}/base_release_${VER_NUM_MIN}_${VER_CLS_LOW}\"
-              }" > "/tmp/${VER_REG}/repo.conf"
+    # FIRST UPGRADE ONLY THE pkg(8) TOOL
+    pkg upgrade -y -r FreeBSD-ports pkg
 
-        # FIRST UPGRADE ONLY THE pkg(8) TOOL
-        pkg upgrade -y -r FreeBSD-ports pkg ; RET_VAL=${?}
+    # CHECK IF pkg(8) IS ABLE TO UPGRADE ITSELF
+    if [ "${?}" != "0" ]
+    then
+      echo "NOPE: failed to upgrade pkg(8) package"
+      echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
+      exit 1
+    fi
 
-        # CHECK IF pkg(8) IS ABLE TO UPGRADE ITSELF
-        if [ ${RET_VAL} != "0" ]
-        then
-          echo "NOPE: failed to upgrade pkg(8) package"
-          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
-          exit 1
-        fi
+    # CHECK IF WE NEED TO DO UPGRADE BETWEEN 'RELEASE' VERSIONS
+    if echo "${VER_INS}" | grep -q -- '-RELEASE' && \
+       echo "${VER_REG}" | grep -q -- '-RELEASE'
+    then
 
-        # CHECK IF WE NEED TO DO UPGRADE BETWEEN 'RELEASE' VERSIONS
-        if echo "${VER_INS}" | grep -q -- '-RELEASE' && \
-           echo "${VER_REG}" | grep -q -- '-RELEASE'
-        then
+      echo "INFO: major upgrade between RELEASE versions"
 
-          echo "INFO: major upgrade between RELEASE versions"
+      TARGET="${VER_NUM_MJR}0${VER_NUM_MIN}000"
 
-          TARGET="${VER_NUM_MJR}0${VER_NUM_MIN}000"
+      pkg -o ABI=FreeBSD:${VER_NUM_MJR}:$(uname -p) \
+          -o OSVERSION=${TARGET} upgrade \
+          -y -r FreeBSD-base
 
-          pkg -o ABI=FreeBSD:${VER_NUM_MJR}:$(uname -p) \
-              -o OSVERSION=${TARGET} upgrade \
-              -y -r FreeBSD-base ; RET_VAL=${?}
+    else
 
-        else
+      # DO ACTUAL FreeBSD Base System UPGRADE
+      # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
+      pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
+          -o IGNORE_OSVERSION=yes upgrade \
+          -y -r FreeBSD-base
 
-          # DO ACTUAL FreeBSD Base System UPGRADE
-          # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
-          pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
-              -o IGNORE_OSVERSION=yes \
-              upgrade -y -r FreeBSD-base ; RET_VAL=${?}
+    fi
 
-        fi
+    # CHECK IF pkg(8) UPGRADE FOR FreeBSD-base WORKED
+    if [ "${?}" != "0" ]
+    then
+      echo "NOPE: failed to upgrade FreeBSD Base System with pkg(8) command"
+      echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
+      exit 1
+    fi
 
-        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-base WORKED
-        if [ ${RET_VAL} != "0" ]
-        then
-          echo "NOPE: failed to upgrade FreeBSD Base System with pkg(8) command"
-          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
-          exit 1
-        fi
+    echo "INFO: review pkg(8) info - sometimes 'service <name> setup' is needed"
 
-        echo "INFO: review pkg(8) info - sometimes 'service <name> setup' is needed"
+    # UPGRADE KERNEL MODULES FROM FreeBSD-ports-kmods REPO
+    # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
+    pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" upgrade \
+        -y -r FreeBSD-ports-kmods
 
-        # UPGRADE KERNEL MODULES FROM FreeBSD-ports-kmods REPO
-        # REASON FOR -U FLAG: pkg(8) ALREADY UPDATED REPOS IN PREVIOUS COMMAND
-        pkg -o REPOS_DIR=/etc/pkg,/usr/local/etc/pkg/repos,"/tmp/${VER_REG}" \
-            upgrade -y -r FreeBSD-ports-kmods ; RET_VAL=${?}
+    # CHECK IF pkg(8) UPGRADE FOR FreeBSD-ports-kmods REPO WORKED
+    if [ "${?}" != "0" ]
+    then
+      echo "NOPE: failed to upgrade FreeBSD KMODs with pkg(8) command"
+      echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
+      exit 1
+    fi
 
-        # CHECK IF pkg(8) UPGRADE FOR FreeBSD-ports-kmods REPO WORKED
-        if [ ${RET_VAL} != "0" ]
-        then
-          echo "NOPE: failed to upgrade FreeBSD KMODs with pkg(8) command"
-          echo "HINT: if pkg(8) failed at fetch just run pkgbase(8) again"
-          exit 1
-        fi
+    # UPGRADE FreeBSD loader(8) BOOTCODE OR NOT IF '-L' OPTION USED
+    if [ "${ARG_BOOT}" = "no" ]
+    then
+      echo "INFO: you disabled update UEFI/BIOS bootcode with '-L' option"
+    else
+      __loader
+    fi
 
-        # UPGRADE FreeBSD loader(8) BOOTCODE OR NOT IF '-L' OPTION USED
-        if [ "${4}" = "-L" ]
-        then
-          ARG_BOOT="no"
-          echo "INFO: you disabled update UEFI/BIOS bootcode with '-L' option"
-        else
-          __loader
-        fi
+    # CHECK FOR *.pkgnew FILES
+    __pkgnew
 
-        # CHECK FOR *.pkgnew FILES
-        __pkgnew
-
-        echo "INFO: you successfully finished the upgrade process"
-        echo "INFO: you may now restart the system with usual command"
-        echo "INFO:   # shutdown -r now"
-        ;;
-
-      (*)
-        # PRINT USAGE INFORMATION
-        __usage
-        ;;
-
-    esac
+    echo "INFO: you successfully finished the upgrade process"
+    echo "INFO: you may now restart the system with usual command"
+    echo "INFO:   # shutdown -r now"
     ;;
 
   (loader)
