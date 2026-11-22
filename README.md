@@ -32,7 +32,6 @@ Updating FreeBSD-ports repository catalogue...
 ## Changelog
 
 **0.5**
-
 - Add `-B` option to omit ZFS Boot Environment creation and move that into `__zfsbe()` function.
 - Remove `RET_VAL` variables.
 - Use `getopts(1)` for arguments parsing.
@@ -53,7 +52,6 @@ Updating FreeBSD-ports repository catalogue...
 - Add check for PKGBASE FreeBSD system.
   
 **0.2**
-
 - Add UFS support.
 - Add PRERELEASE target support.
 - Add BIOS bootcode update.
