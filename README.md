@@ -31,6 +31,13 @@ Updating FreeBSD-ports repository catalogue...
 
 ## Changelog
 
+**0.6**
+- Only check target FreeBSD version for RELEASE.
+- Detect if `pkgbase(8)` is run within FreeBSD Jail.
+- Check if `devfs(5)` is mounted so `pkg(8)` will work.
+- Check for `allow.chflags` rights so `pkg(8)` will work.
+- Add additional comments.
+
 **0.5**
 - Add `-B` option to omit ZFS Boot Environment creation and move that into `__zfsbe()` function.
 - Remove `RET_VAL` variables.
