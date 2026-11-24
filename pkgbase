@@ -34,17 +34,8 @@
 # DEFAULTS
 ARG_BOOT=${ARG_BOOT:-"yes"}
 ARG_BENV=${ARG_BENV:-"yes"}
+ARG_JAIL=${ARG_JAIL:-"no"}
 ARG_VERS=${ARG_VERS:-""}
-
-# CHECK THAT WE OPERATE ON A PKGBASE SYSTEM IN THE FIRST PLACE
-__check_pkgbase() {
-  if ! pkg which -o /bin/ls 1> /dev/null 2> /dev/null
-  then
-    echo "NOPE: this FreeBSD system does not use PKGBASE packaging"
-    echo "INFO: on FreeBSD with Distribution Sets use freebsd-update(8) tool"
-    exit 1
-  fi
-}
 
 # DISPLAY USAGE INFORMATION
 __usage() {
@@ -63,6 +54,75 @@ __usage() {
   echo "  -B          omit ZFS Boot Environment creation"
   echo
   exit 1
+}
+
+# CHECK THAT WE OPERATE ON A PKGBASE SYSTEM IN THE FIRST PLACE
+__check_pkgbase() {
+  if ! pkg which -o /bin/ls 1> /dev/null 2> /dev/null
+  then
+    echo "NOPE: this FreeBSD system does not use PKGBASE packaging"
+    echo "INFO: on FreeBSD with Distribution Sets use freebsd-update(8) tool"
+    exit 1
+  fi
+}
+
+# CHECK IF JAIL HAS allow.chflags PERMISSION
+__check_jail_chflags() {
+  if [ "$( sysctl -n security.jail.chflags_allowed )" = "0" ]
+  then
+    echo "NOPE: this jail does not have 'allow.chflags' permission"
+    echo "HINT: upgrade with pkg(8) requires 'allow.chflags' rights"
+    exit 1
+  fi
+}
+
+# CHECK IF devfs(5) IS MOUNTED AT /dev DIR
+__check_jail_devfs() {
+  while read DEV MNT FS GARBAGE
+  do
+    DEV_REAL="${DEV} ${MNT} ${FS}"
+    if [ "${DEV_REAL}" = "devfs /dev devfs" ]
+    then
+
+      echo "INFO: devfs(5) filesystem mounted at /dev dir"
+
+    else
+
+      echo "INFO: trying to mount  devfs(5) filesystem at /dev dir"
+
+      if ! mount -t devfs devfs /dev 1> /dev/null 2> /dev/null
+      then
+
+        echo "NOPE: could not mount devfs(5) filesystem at /dev dir"
+        echo "HINT: allow.mount.devfs and/or allow.mount rights may be needed"
+
+        exit 1
+
+      fi
+
+      echo "INFO: successfully mounted devfs(5) filesystem at /dev dir"
+
+    fi
+
+  done << MOUNT
+    $( mount -p -t devfs 2> /dev/null )
+MOUNT
+}
+
+# ADD -L/-B ARGUMENTS IF RUNNING IN FreeBSD JAIL
+__check_jailed() {
+  if [ "$( sysctl -n security.jail.jailed )" = "1" ]
+  then
+    ARG_JAIL="yes"
+    ARG_BOOT="no"
+    ARG_BENV="no"
+
+    # CHECK IF JAIL HAS allow.chflags PERMISSION
+    __check_jail_chflags
+
+    # CHECK IF devfs(5) IS MOUNTED AT /dev DIR
+    __check_jail_devfs
+  fi
 }
 
 # CLEAN AFTER WORK AND WHEN INTERRUPTED
@@ -287,7 +347,7 @@ trap '__clean' 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 case "${1}" in
   (--version|-version|version)
     echo
-    echo "pkgbase(8) 0.5 2026/11/21"
+    echo "pkgbase(8) 0.6 2026/11/24"
     echo
     exit 1
     ;;
@@ -301,11 +361,13 @@ case "${1}" in
     # CHECK IF ITS PKGBASE SYSTEM
     __check_pkgbase
 
+    # DISPLAY USAGE IF WRONG NUMBER OF ARGUMENTS
     if [ ${#} -lt 3 ]
     then
       __usage
     fi
 
+    # shift THE 'upgrade' PARAMETER
     shift
 
     # OBTAIN ARGUMENTS FOR OPTIONS
@@ -319,18 +381,16 @@ case "${1}" in
       esac
     done
 
-    # DEBUG
-    echo ARG_BOOT: ${ARG_BOOT}
-    echo ARG_BENV: ${ARG_BENV}
-    echo ARG_VERS: ${ARG_VERS}
-
     # VERIFY VERSIONS FOR UPGRADE
     __ver_regex "${ARG_VERS}"
+
+    # CHECK IF WE RUN INSIDE JAIL
+    __check_jailed
 
     # CREATE ZFS Boot Environment BEFORE CHANGES
     if [ "${ARG_BENV}" = "no" ]
     then
-      echo "INFO: you disabled ZFS Boot Environment creation"
+      echo "INFO: ZFS Boot Environment creation is disabled"
     else
       __zfsbe
     fi
@@ -365,9 +425,8 @@ case "${1}" in
       exit 1
     fi
 
-    # CHECK IF WE NEED TO DO UPGRADE BETWEEN 'RELEASE' VERSIONS
-    if echo "${VER_INS}" | grep -q -- '-RELEASE' && \
-       echo "${VER_REG}" | grep -q -- '-RELEASE'
+    # CHECK IF WE NEED TO DO UPGRADE INTO 'RELEASE' VERSION
+    if echo "${VER_REG}" | grep -q -- '-RELEASE'
     then
 
       echo "INFO: major upgrade between RELEASE versions"
@@ -414,7 +473,7 @@ case "${1}" in
     # UPGRADE FreeBSD loader(8) BOOTCODE OR NOT IF '-L' OPTION USED
     if [ "${ARG_BOOT}" = "no" ]
     then
-      echo "INFO: you disabled update UEFI/BIOS bootcode with '-L' option"
+      echo "INFO: UEFI/BIOS bootcode update is disabled"
     else
       __loader
     fi
